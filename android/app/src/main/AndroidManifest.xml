@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="true"
+        android:label="@string/app_name"
+        android:supportsRtl="true">
+
+        <!-- Poweramp Track Provider -->
+        <provider
+            android:name=".StreamProvider"
+            android:authorities="com.theo7791l.powerampstream"
+            android:exported="true"
+            android:grantUriPermissions="true">
+            <intent-filter>
+                <action android:name="com.maxmpz.audioplayer.AUDIO_FILES_PROVIDER" />
+            </intent-filter>
+            <meta-data
+                android:name="com.maxmpz.audioplayer.AUDIO_FILES_PROVIDER_VERSION"
+                android:value="1" />
+        </provider>
+
+        <!-- Settings Activity -->
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+</manifest>
