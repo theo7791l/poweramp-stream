@@ -1,13 +1,18 @@
-import { Router } from 'express';
-import { searchSpotifyTrack, getSpotifyPlaylist, getSpotifyAlbum, getSpotifyArtistTopTracks, getTrackById } from '../spotify';
+import { Router, Request, Response } from 'express';
+import {
+  searchSpotifyTrack,
+  getSpotifyPlaylist,
+  getSpotifyAlbum,
+  getSpotifyArtistTopTracks,
+  getTrackById,
+} from '../spotify';
 
 export const spotifyRouter = Router();
 
-// Search tracks
-spotifyRouter.get('/search', async (req, res) => {
+spotifyRouter.get('/search', async (req: Request, res: Response) => {
   try {
     const { q } = req.query as { q: string };
-    if (!q) return res.status(400).json({ error: 'Missing query' });
+    if (!q) return res.status(400).json({ error: 'Paramètre q manquant' }) as any;
     const tracks = await searchSpotifyTrack(q);
     res.json(tracks);
   } catch (e: any) {
@@ -15,8 +20,7 @@ spotifyRouter.get('/search', async (req, res) => {
   }
 });
 
-// Get single track
-spotifyRouter.get('/track/:id', async (req, res) => {
+spotifyRouter.get('/track/:id', async (req: Request, res: Response) => {
   try {
     const track = await getTrackById(req.params.id);
     res.json(track);
@@ -25,8 +29,7 @@ spotifyRouter.get('/track/:id', async (req, res) => {
   }
 });
 
-// Get playlist tracks
-spotifyRouter.get('/playlist/:id', async (req, res) => {
+spotifyRouter.get('/playlist/:id', async (req: Request, res: Response) => {
   try {
     const tracks = await getSpotifyPlaylist(req.params.id);
     res.json(tracks);
@@ -35,8 +38,7 @@ spotifyRouter.get('/playlist/:id', async (req, res) => {
   }
 });
 
-// Get album tracks
-spotifyRouter.get('/album/:id', async (req, res) => {
+spotifyRouter.get('/album/:id', async (req: Request, res: Response) => {
   try {
     const tracks = await getSpotifyAlbum(req.params.id);
     res.json(tracks);
@@ -45,8 +47,7 @@ spotifyRouter.get('/album/:id', async (req, res) => {
   }
 });
 
-// Get artist top tracks
-spotifyRouter.get('/artist/:id/top', async (req, res) => {
+spotifyRouter.get('/artist/:id/top', async (req: Request, res: Response) => {
   try {
     const tracks = await getSpotifyArtistTopTracks(req.params.id);
     res.json(tracks);
