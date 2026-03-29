@@ -6,19 +6,20 @@
     <application
         android:allowBackup="true"
         android:label="@string/app_name"
+        android:theme="@style/Theme.PowerampStream"
         android:supportsRtl="true">
 
-        <!-- Poweramp Track Provider -->
+        <!-- Poweramp Track Provider API -->
         <provider
             android:name=".StreamProvider"
             android:authorities="com.theo7791l.powerampstream"
             android:exported="true"
             android:grantUriPermissions="true">
             <intent-filter>
-                <action android:name="com.maxmpz.audioplayer.AUDIO_FILES_PROVIDER" />
+                <action android:name="com.maxmpz.audioplayer.TRACK_PROVIDER_AUDIO" />
             </intent-filter>
             <meta-data
-                android:name="com.maxmpz.audioplayer.AUDIO_FILES_PROVIDER_VERSION"
+                android:name="com.maxmpz.audioplayer.TRACK_PROVIDER_AUDIO_VERSION"
                 android:value="1" />
         </provider>
 

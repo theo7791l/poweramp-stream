@@ -15,12 +15,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 
 class StreamProvider : DocumentsProvider() {
 
     companion object {
         private const val TAG = "StreamProvider"
+
         private val ROOT_PROJECTION = arrayOf(
             "root_id", "title", "summary", "flags", "mime_types", "document_id"
         )
@@ -42,7 +44,8 @@ class StreamProvider : DocumentsProvider() {
         private val MIME_DIR = DocumentsContract.Document.MIME_TYPE_DIR
     }
 
-    private val executor = Executors.newCachedThreadPool()
+    // Pool dédié : queries + streams tournent tous en dehors du main thread
+    private val ioExecutor = Executors.newCachedThreadPool()
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -53,27 +56,16 @@ class StreamProvider : DocumentsProvider() {
         context!!.getSharedPreferences("settings", 0)
             .getString("backend_url", BuildConfig.BACKEND_URL) ?: BuildConfig.BACKEND_URL
 
-    private fun getJson(path: String): JSONObject? {
-        return try {
-            val req = Request.Builder().url("${backendUrl()}$path").build()
-            val res = client.newCall(req).execute()
-            if (res.isSuccessful) JSONObject(res.body!!.string()) else null
-        } catch (e: Exception) {
-            Log.e(TAG, "GET $path failed: ${e.message}")
-            null
-        }
-    }
+    // Appels réseau bloquants — appeler UNIQUEMENT depuis ioExecutor
+    private fun getJson(path: String): JSONObject? = runCatching {
+        val res = client.newCall(Request.Builder().url("${backendUrl()}$path").build()).execute()
+        if (res.isSuccessful) JSONObject(res.body!!.string()) else null
+    }.onFailure { Log.e(TAG, "getJson $path: ${it.message}") }.getOrNull()
 
-    private fun getJsonArray(path: String): JSONArray? {
-        return try {
-            val req = Request.Builder().url("${backendUrl()}$path").build()
-            val res = client.newCall(req).execute()
-            if (res.isSuccessful) JSONArray(res.body!!.string()) else null
-        } catch (e: Exception) {
-            Log.e(TAG, "GET $path failed: ${e.message}")
-            null
-        }
-    }
+    private fun getJsonArray(path: String): JSONArray? = runCatching {
+        val res = client.newCall(Request.Builder().url("${backendUrl()}$path").build()).execute()
+        if (res.isSuccessful) JSONArray(res.body!!.string()) else null
+    }.onFailure { Log.e(TAG, "getJsonArray $path: ${it.message}") }.getOrNull()
 
     override fun onCreate(): Boolean = true
 
@@ -90,82 +82,71 @@ class StreamProvider : DocumentsProvider() {
         return cursor
     }
 
+    // queryChildDocuments : on bloque volontairement sur ioExecutor (ContentProvider autorise
+    // les appels bloquants sur son propre thread — c'est Poweramp qui appelle depuis un
+    // worker thread, pas le main thread UI).
     override fun queryChildDocuments(
         parentDocumentId: String,
         projection: Array<out String>?,
         sortOrder: String?
     ): Cursor {
         val cursor = MatrixCursor(DOCUMENT_PROJECTION)
-        when {
-            parentDocumentId == "root" -> {
-                cursor.newRow().apply {
-                    add(Document.COLUMN_DOCUMENT_ID, "dir:search:top+tracks")
-                    add(Document.COLUMN_MIME_TYPE, MIME_DIR)
-                    add(Document.COLUMN_DISPLAY_NAME, "Rechercher")
-                    add(Document.COLUMN_LAST_MODIFIED, System.currentTimeMillis())
-                    add(Document.COLUMN_FLAGS, 0)
-                    add(Document.COLUMN_SIZE, 0)
-                    add("track_number", 0)
-                    add("duration", 0)
-                    add("artist", "")
-                    add("album", "")
-                    add("album_art", "")
-                    add("url", "")
+        val future: Future<Unit> = ioExecutor.submit<Unit> {
+            when {
+                parentDocumentId == "root" -> {
+                    addDir(cursor, "dir:featured", "Titres populaires")
+                    addDir(cursor, "dir:search:top+hits+2025", "Rechercher (top hits)")
                 }
-                cursor.newRow().apply {
-                    add(Document.COLUMN_DOCUMENT_ID, "dir:featured")
-                    add(Document.COLUMN_MIME_TYPE, MIME_DIR)
-                    add(Document.COLUMN_DISPLAY_NAME, "Titres populaires")
-                    add(Document.COLUMN_LAST_MODIFIED, System.currentTimeMillis())
-                    add(Document.COLUMN_FLAGS, 0)
-                    add(Document.COLUMN_SIZE, 0)
-                    add("track_number", 0)
-                    add("duration", 0)
-                    add("artist", "")
-                    add("album", "")
-                    add("album_art", "")
-                    add("url", "")
+                parentDocumentId.startsWith("dir:featured") -> {
+                    getJsonArray("/spotify/search?q=top+hits+2025")
+                        ?.let { addTracksFromArray(cursor, it) }
                 }
-            }
-            parentDocumentId.startsWith("dir:featured") -> {
-                val tracks = getJsonArray("/spotify/search?q=top+hits+2025")
-                tracks?.let { addTracksFromArray(cursor, it) }
-            }
-            parentDocumentId.startsWith("dir:search:") -> {
-                val query = parentDocumentId.removePrefix("dir:search:").replace("+", " ")
-                val tracks = getJsonArray("/spotify/search?q=${Uri.encode(query)}")
-                tracks?.let { addTracksFromArray(cursor, it) }
-            }
-            parentDocumentId.startsWith("playlist:") -> {
-                val playlistId = parentDocumentId.removePrefix("playlist:")
-                val tracks = getJsonArray("/spotify/playlist/$playlistId")
-                tracks?.let { addTracksFromArray(cursor, it) }
-            }
-            parentDocumentId.startsWith("album:") -> {
-                val albumId = parentDocumentId.removePrefix("album:")
-                val tracks = getJsonArray("/spotify/album/$albumId")
-                tracks?.let { addTracksFromArray(cursor, it) }
+                parentDocumentId.startsWith("dir:search:") -> {
+                    val q = parentDocumentId.removePrefix("dir:search:").replace("+", " ")
+                    getJsonArray("/spotify/search?q=${Uri.encode(q)}")
+                        ?.let { addTracksFromArray(cursor, it) }
+                }
+                parentDocumentId.startsWith("playlist:") -> {
+                    val id = parentDocumentId.removePrefix("playlist:")
+                    getJsonArray("/spotify/playlist/$id")
+                        ?.let { addTracksFromArray(cursor, it) }
+                }
+                parentDocumentId.startsWith("album:") -> {
+                    val id = parentDocumentId.removePrefix("album:")
+                    getJsonArray("/spotify/album/$id")
+                        ?.let { addTracksFromArray(cursor, it) }
+                }
             }
         }
+        future.get() // Attend la fin du fetch (timeout implicite via OkHttp)
         return cursor
+    }
+
+    private fun addDir(cursor: MatrixCursor, id: String, name: String) {
+        cursor.newRow().apply {
+            add(Document.COLUMN_DOCUMENT_ID, id)
+            add(Document.COLUMN_MIME_TYPE, MIME_DIR)
+            add(Document.COLUMN_DISPLAY_NAME, name)
+            add(Document.COLUMN_LAST_MODIFIED, System.currentTimeMillis())
+            add(Document.COLUMN_FLAGS, 0)
+            add(Document.COLUMN_SIZE, 0)
+            add("track_number", 0); add("duration", 0)
+            add("artist", ""); add("album", ""); add("album_art", ""); add("url", "")
+        }
     }
 
     private fun addTracksFromArray(cursor: MatrixCursor, tracks: JSONArray) {
         for (i in 0 until tracks.length()) {
             runCatching {
                 val track = tracks.getJSONObject(i)
-                val trackId = track.optString("id")
-                if (trackId.isEmpty()) return@runCatching
+                val trackId = track.optString("id").takeIf { it.isNotEmpty() } ?: return@runCatching
                 val name = track.optString("name", "Inconnu")
-                val artist = track.optJSONArray("artists")
-                    ?.optJSONObject(0)?.optString("name") ?: ""
+                val artist = track.optJSONArray("artists")?.optJSONObject(0)?.optString("name") ?: ""
                 val albumObj = track.optJSONObject("album")
                 val album = albumObj?.optString("name") ?: ""
-                val albumArt = albumObj?.optJSONArray("images")
-                    ?.optJSONObject(0)?.optString("url") ?: ""
+                val albumArt = albumObj?.optJSONArray("images")?.optJSONObject(0)?.optString("url") ?: ""
                 val durationMs = track.optLong("duration_ms", 0)
                 val trackNumber = track.optInt("track_number", 0)
-
                 cursor.newRow().apply {
                     add(Document.COLUMN_DOCUMENT_ID, "track:$trackId")
                     add(Document.COLUMN_MIME_TYPE, MIME_AUDIO)
@@ -180,56 +161,46 @@ class StreamProvider : DocumentsProvider() {
                     add("album_art", albumArt)
                     add("url", "${backendUrl()}/stream/proxy/$trackId")
                 }
-            }
+            }.onFailure { Log.e(TAG, "addTrack[$i]: ${it.message}") }
         }
     }
 
     override fun queryDocument(documentId: String, projection: Array<out String>?): Cursor {
         val cursor = MatrixCursor(DOCUMENT_PROJECTION)
-        if (documentId.startsWith("track:")) {
-            val trackId = documentId.removePrefix("track:")
-            val track = getJson("/spotify/track/$trackId")
-            track?.let {
-                val name = it.optString("name", "Inconnu")
-                val artist = it.optJSONArray("artists")
-                    ?.optJSONObject(0)?.optString("name") ?: ""
-                val albumObj = it.optJSONObject("album")
-                val album = albumObj?.optString("name") ?: ""
-                val albumArt = albumObj?.optJSONArray("images")
-                    ?.optJSONObject(0)?.optString("url") ?: ""
-                val durationMs = it.optLong("duration_ms", 0)
+        val future: Future<Unit> = ioExecutor.submit<Unit> {
+            if (documentId.startsWith("track:")) {
+                val trackId = documentId.removePrefix("track:")
+                getJson("/spotify/track/$trackId")?.let { t ->
+                    val name = t.optString("name", "Inconnu")
+                    val artist = t.optJSONArray("artists")?.optJSONObject(0)?.optString("name") ?: ""
+                    val albumObj = t.optJSONObject("album")
+                    val album = albumObj?.optString("name") ?: ""
+                    val albumArt = albumObj?.optJSONArray("images")?.optJSONObject(0)?.optString("url") ?: ""
+                    cursor.newRow().apply {
+                        add(Document.COLUMN_DOCUMENT_ID, documentId)
+                        add(Document.COLUMN_MIME_TYPE, MIME_AUDIO)
+                        add(Document.COLUMN_DISPLAY_NAME, "$artist - $name")
+                        add(Document.COLUMN_LAST_MODIFIED, System.currentTimeMillis())
+                        add(Document.COLUMN_FLAGS, 0); add(Document.COLUMN_SIZE, 0)
+                        add("track_number", 0)
+                        add("duration", t.optLong("duration_ms", 0))
+                        add("artist", artist); add("album", album); add("album_art", albumArt)
+                        add("url", "${backendUrl()}/stream/proxy/$trackId")
+                    }
+                }
+            } else {
                 cursor.newRow().apply {
                     add(Document.COLUMN_DOCUMENT_ID, documentId)
-                    add(Document.COLUMN_MIME_TYPE, MIME_AUDIO)
-                    add(Document.COLUMN_DISPLAY_NAME, "$artist - $name")
+                    add(Document.COLUMN_MIME_TYPE, MIME_DIR)
+                    add(Document.COLUMN_DISPLAY_NAME, documentId.substringAfter(":"))
                     add(Document.COLUMN_LAST_MODIFIED, System.currentTimeMillis())
-                    add(Document.COLUMN_FLAGS, 0)
-                    add(Document.COLUMN_SIZE, 0)
-                    add("track_number", 0)
-                    add("duration", durationMs)
-                    add("artist", artist)
-                    add("album", album)
-                    add("album_art", albumArt)
-                    add("url", "${backendUrl()}/stream/proxy/$trackId")
+                    add(Document.COLUMN_FLAGS, 0); add(Document.COLUMN_SIZE, 0)
+                    add("track_number", 0); add("duration", 0)
+                    add("artist", ""); add("album", ""); add("album_art", ""); add("url", "")
                 }
             }
-        } else {
-            // Pour les dossiers (dir:*)
-            cursor.newRow().apply {
-                add(Document.COLUMN_DOCUMENT_ID, documentId)
-                add(Document.COLUMN_MIME_TYPE, MIME_DIR)
-                add(Document.COLUMN_DISPLAY_NAME, documentId)
-                add(Document.COLUMN_LAST_MODIFIED, System.currentTimeMillis())
-                add(Document.COLUMN_FLAGS, 0)
-                add(Document.COLUMN_SIZE, 0)
-                add("track_number", 0)
-                add("duration", 0)
-                add("artist", "")
-                add("album", "")
-                add("album_art", "")
-                add("url", "")
-            }
         }
+        future.get()
         return cursor
     }
 
@@ -241,14 +212,12 @@ class StreamProvider : DocumentsProvider() {
         if (!documentId.startsWith("track:")) throw IOException("Not a track: $documentId")
         val trackId = documentId.removePrefix("track:")
         val proxyUrl = "${backendUrl()}/stream/proxy/$trackId"
-
         val pipes = ParcelFileDescriptor.createPipe()
-        executor.submit {
+        ioExecutor.submit {
             try {
-                val req = Request.Builder().url(proxyUrl).build()
-                val res = client.newCall(req).execute()
+                val res = client.newCall(Request.Builder().url(proxyUrl).build()).execute()
                 if (!res.isSuccessful) {
-                    Log.e(TAG, "Proxy returned ${res.code} for $proxyUrl")
+                    Log.e(TAG, "Proxy ${res.code} for $proxyUrl")
                     pipes[1].close()
                     return@submit
                 }
@@ -256,7 +225,7 @@ class StreamProvider : DocumentsProvider() {
                     res.body?.byteStream()?.copyTo(out)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Stream error for $trackId: ${e.message}")
+                Log.e(TAG, "openDocument $trackId: ${e.message}")
                 runCatching { pipes[1].close() }
             }
         }

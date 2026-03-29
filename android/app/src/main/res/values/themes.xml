@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PowerampStream" parent="Theme.AppCompat.DayNight.DarkActionBar">
+        <item name="colorPrimary">#FF6B35</item>
+        <item name="colorPrimaryDark">#CC4400</item>
+        <item name="colorAccent">#FF6B35</item>
+    </style>
+</resources>
